@@ -8,13 +8,18 @@ import cors from "cors";
 dotenv.config();
 
 const app = express();
-app.use(cors());
+
+// ✅ Configuración CORS
+app.use(cors({
+  origin: ["https://velipetroll.github.io"], // tu dominio de GitHub Pages
+  methods: ["GET", "POST"],
+  allowedHeaders: ["Content-Type"]
+}));
+
 app.use(express.json());
+const upload = multer({ dest: "/tmp" });
 
-// Configurar almacenamiento temporal
-const upload = multer({ dest: "/tmp" }); // en Vercel solo puedes escribir en /tmp
-
-// Configurar Cloudinary
+// ✅ Configurar Cloudinary
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
@@ -59,11 +64,18 @@ app.get("/imagenes", async (req, res) => {
       public_id: r.public_id,
     }));
 
+    // ✅ encabezado explícito de CORS
+    res.setHeader("Access-Control-Allow-Origin", "*");
     res.json(images);
   } catch (error) {
     console.error("❌ Error listando imágenes:", error);
     res.status(500).json({ error: "Error al listar imágenes" });
   }
+});
+
+// --- Ruta raíz ---
+app.get("/", (req, res) => {
+  res.send("✅ Backend Cloudinary funcionando correctamente en Vercel");
 });
 
 export default app;
