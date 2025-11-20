@@ -8,18 +8,14 @@ import cors from "cors";
 dotenv.config();
 
 const app = express();
-
-// ✅ Configuración CORS
-app.use(cors({
-  origin: ["https://velipetroll.github.io"], // tu dominio de GitHub Pages
-  methods: ["GET", "POST"],
-  allowedHeaders: ["Content-Type"]
-}));
-
+app.use(cors());
 app.use(express.json());
-const upload = multer({ dest: "/tmp" });
 
-// ✅ Configurar Cloudinary
+// Configurar almacenamiento temporal en memoria para Vercel
+const storage = multer.memoryStorage();
+const upload = multer({ storage });
+
+// Configurar Cloudinary
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
@@ -30,16 +26,23 @@ cloudinary.config({
 app.post("/upload", upload.single("file"), async (req, res) => {
   try {
     const { grado, anio, tipo } = req.body;
-    const filePath = req.file.path;
+    
+    if (!req.file) {
+      return res.status(400).json({ error: "No se proporcionó ningún archivo" });
+    }
+
+    // Convertir buffer a base64 para Cloudinary
+    const b64 = Buffer.from(req.file.buffer).toString("base64");
+    const dataURI = "data:" + req.file.mimetype + ";base64," + b64;
+
     const folder = `${tipo}/${anio}/${grado}`;
 
-    const result = await cloudinary.uploader.upload(filePath, {
+    const result = await cloudinary.uploader.upload(dataURI, {
       folder,
       tags: [`${tipo}_${anio}_${grado}`],
       resource_type: "auto",
     });
 
-    fs.unlinkSync(filePath);
     res.json({ url: result.secure_url, public_id: result.public_id });
   } catch (error) {
     console.error("❌ Error al subir:", error);
@@ -51,6 +54,11 @@ app.post("/upload", upload.single("file"), async (req, res) => {
 app.get("/imagenes", async (req, res) => {
   try {
     const { tipo, anio, grado } = req.query;
+    
+    if (!tipo || !anio || !grado) {
+      return res.status(400).json({ error: "Faltan parámetros: tipo, anio, grado" });
+    }
+
     const prefix = `${tipo}/${anio}/${grado}`;
 
     const result = await cloudinary.api.resources({
@@ -64,8 +72,6 @@ app.get("/imagenes", async (req, res) => {
       public_id: r.public_id,
     }));
 
-    // ✅ encabezado explícito de CORS
-    res.setHeader("Access-Control-Allow-Origin", "*");
     res.json(images);
   } catch (error) {
     console.error("❌ Error listando imágenes:", error);
@@ -73,9 +79,17 @@ app.get("/imagenes", async (req, res) => {
   }
 });
 
-// --- Ruta raíz ---
+// Ruta de salud para verificar que el servidor funciona
 app.get("/", (req, res) => {
-  res.send("✅ Backend Cloudinary funcionando correctamente en Vercel");
+  res.json({ message: "Servidor OBS Backend funcionando correctamente" });
 });
 
+// Manejar rutas no encontradas
+app.use((req, res) => {
+  res.status(404).json({ error: "Ruta no encontrada" });
+});
+
+const PORT = process.env.PORT || 3000;
+
+// Exportar para Vercel
 export default app;
