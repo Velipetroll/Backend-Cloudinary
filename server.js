@@ -1,19 +1,8 @@
-import express from "express";
-import multer from "multer";
 import { v2 as cloudinary } from "cloudinary";
+import multer from "multer";
 import fs from "fs";
-import dotenv from "dotenv";
-import cors from "cors";
-
-dotenv.config();
-
-const app = express();
-app.use(cors());
-app.use(express.json());
-
-// Configurar almacenamiento temporal en memoria para Vercel
-const storage = multer.memoryStorage();
-const upload = multer({ storage });
+import path from "path";
+import { fileURLToPath } from "url";
 
 // Configurar Cloudinary
 cloudinary.config({
@@ -22,74 +11,91 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-// --- Subida de archivos ---
-app.post("/upload", upload.single("file"), async (req, res) => {
-  try {
-    const { grado, anio, tipo } = req.body;
-    
-    if (!req.file) {
-      return res.status(400).json({ error: "No se proporcionó ningún archivo" });
-    }
+// Configurar multer para manejar archivos en memoria
+const upload = multer({ storage: multer.memoryStorage() });
 
-    // Convertir buffer a base64 para Cloudinary
-    const b64 = Buffer.from(req.file.buffer).toString("base64");
-    const dataURI = "data:" + req.file.mimetype + ";base64," + b64;
-
-    const folder = `${tipo}/${anio}/${grado}`;
-
-    const result = await cloudinary.uploader.upload(dataURI, {
-      folder,
-      tags: [`${tipo}_${anio}_${grado}`],
-      resource_type: "auto",
+// Middleware para ejecutar multer en serverless
+const runMiddleware = (req, res, fn) => {
+  return new Promise((resolve, reject) => {
+    fn(req, res, (result) => {
+      if (result instanceof Error) {
+        return reject(result);
+      }
+      return resolve(result);
     });
+  });
+};
 
-    res.json({ url: result.secure_url, public_id: result.public_id });
-  } catch (error) {
-    console.error("❌ Error al subir:", error);
-    res.status(500).json({ error: "Error al subir archivo" });
-  }
-});
+export default async function handler(req, res) {
+  const { method } = req;
 
-// --- Obtener imágenes ---
-app.get("/imagenes", async (req, res) => {
-  try {
-    const { tipo, anio, grado } = req.query;
-    
-    if (!tipo || !anio || !grado) {
-      return res.status(400).json({ error: "Faltan parámetros: tipo, anio, grado" });
+  if (method === "POST") {
+    // Ruta: /api.js (upload)
+    try {
+      await runMiddleware(req, res, upload.single("file"));
+
+      const { grado, anio, tipo } = req.body;
+
+      if (!req.file) {
+        return res.status(400).json({ error: "No se subió ningún archivo" });
+      }
+
+      // Guardar archivo temporalmente en /tmp (recomendado en Vercel)
+      const __filename = fileURLToPath(import.meta.url);
+      const __dirname = path.dirname(__filename);
+      const tempPath = `/tmp/${Date.now()}_${req.file.originalname}`;
+      fs.writeFileSync(tempPath, req.file.buffer);
+
+      const folder = `${tipo}/${anio}/${grado}`;
+
+      const result = await cloudinary.uploader.upload(tempPath, {
+        folder,
+        tags: [`${tipo}_${anio}_${grado}`],
+        resource_type: "auto",
+      });
+
+      fs.unlinkSync(tempPath); // Eliminar archivo temporal
+
+      res.status(200).json({ url: result.secure_url, public_id: result.public_id });
+    } catch (error) {
+      console.error("❌ Error al subir:", error);
+      res.status(500).json({ error: "Error al subir archivo" });
     }
+  } else if (method === "GET") {
+    // Ruta: /api.js (imagenes)
+    try {
+      const { tipo, anio, grado } = req.query;
 
-    const prefix = `${tipo}/${anio}/${grado}`;
+      if (!tipo || !anio || !grado) {
+        return res.status(400).json({ error: "Faltan parámetros: tipo, anio, grado" });
+      }
 
-    const result = await cloudinary.api.resources({
-      type: "upload",
-      prefix,
-      max_results: 50,
-    });
+      const prefix = `${tipo}/${anio}/${grado}`;
 
-    const images = result.resources.map((r) => ({
-      url: r.secure_url,
-      public_id: r.public_id,
-    }));
+      const result = await cloudinary.api.resources({
+        type: "upload",
+        prefix,
+        max_results: 50,
+      });
 
-    res.json(images);
-  } catch (error) {
-    console.error("❌ Error listando imágenes:", error);
-    res.status(500).json({ error: "Error al listar imágenes" });
+      const images = result.resources.map((r) => ({
+        url: r.secure_url,
+        public_id: r.public_id,
+      }));
+
+      res.status(200).json(images);
+    } catch (error) {
+      console.error("❌ Error listando imágenes:", error);
+      res.status(500).json({ error: "Error al listar imágenes" });
+    }
+  } else {
+    res.status(405).json({ error: "Método no permitido" });
   }
-});
+}
 
-// Ruta de salud para verificar que el servidor funciona
-app.get("/", (req, res) => {
-  res.json({ message: "Servidor OBS Backend funcionando correctamente" });
-});
-
-// Manejar rutas no encontradas
-app.use((req, res) => {
-  res.status(404).json({ error: "Ruta no encontrada" });
-});
-
-const PORT = process.env.PORT || 3000;
-
-// Exportar para Vercel
-export default app;
+// Deshabilitar body parsing automático para manejar archivos
+export const config = {
+  api: {
+    bodyParser: false,
+  },
+};
