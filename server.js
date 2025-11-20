@@ -1,7 +1,6 @@
 import express from "express";
 import multer from "multer";
 import { v2 as cloudinary } from "cloudinary";
-import fs from "fs";
 import dotenv from "dotenv";
 import cors from "cors";
 
@@ -11,85 +10,38 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Configurar almacenamiento temporal en memoria para Vercel
+// Configurar almacenamiento en memoria
 const storage = multer.memoryStorage();
 const upload = multer({ 
   storage,
-  limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB límite
-  }
+  limits: { fileSize: 10 * 1024 * 1024 } // 10MB
 });
 
-// Configurar Cloudinary con validación
-const cloudinaryConfig = {
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET,
-};
+// Validar y configurar Cloudinary
+const requiredEnvVars = [
+  'CLOUDINARY_CLOUD_NAME',
+  'CLOUDINARY_API_KEY', 
+  'CLOUDINARY_API_SECRET'
+];
 
-// Validar que las variables de Cloudinary estén configuradas
-if (!cloudinaryConfig.cloud_name || !cloudinaryConfig.api_key || !cloudinaryConfig.api_secret) {
-  console.error("❌ Faltan variables de entorno de Cloudinary");
+const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
+
+if (missingVars.length > 0) {
+  console.error('❌ Variables de entorno faltantes:', missingVars);
+} else {
+  console.log('✅ Todas las variables de Cloudinary están configuradas');
+  
+  cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET,
+  });
 }
 
-cloudinary.config(cloudinaryConfig);
-
-// Middleware de logging para debugging
+// Middleware de logging
 app.use((req, res, next) => {
   console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
   next();
-});
-
-// --- Subida de archivos ---
-app.post("/upload", upload.single("file"), async (req, res) => {
-  try {
-    console.log("📤 Iniciando subida de archivo...");
-    console.log("Body:", req.body);
-    console.log("File:", req.file ? `Presente (${req.file.originalname}, ${req.file.size} bytes)` : "Ausente");
-
-    const { grado, anio, tipo } = req.body;
-    
-    if (!req.file) {
-      return res.status(400).json({ error: "No se proporcionó ningún archivo" });
-    }
-
-    if (!grado || !anio || !tipo) {
-      return res.status(400).json({ 
-        error: "Faltan parámetros requeridos",
-        required: ["grado", "anio", "tipo"],
-        received: { grado, anio, tipo }
-      });
-    }
-
-    // Convertir buffer a base64 para Cloudinary
-    const b64 = Buffer.from(req.file.buffer).toString("base64");
-    const dataURI = "data:" + req.file.mimetype + ";base64," + b64;
-
-    const folder = `${tipo}/${anio}/${grado}`;
-    console.log("📁 Subiendo a folder:", folder);
-
-    const result = await cloudinary.uploader.upload(dataURI, {
-      folder,
-      tags: [`${tipo}_${anio}_${grado}`],
-      resource_type: "auto",
-    });
-
-    console.log("✅ Archivo subido exitosamente:", result.public_id);
-    
-    res.json({ 
-      success: true,
-      url: result.secure_url, 
-      public_id: result.public_id,
-      folder: folder
-    });
-  } catch (error) {
-    console.error("❌ Error al subir:", error);
-    res.status(500).json({ 
-      error: "Error al subir archivo",
-      message: error.message,
-      details: error.stack
-    });
-  }
 });
 
 // --- Obtener imágenes ---
@@ -98,6 +50,15 @@ app.get("/imagenes", async (req, res) => {
     console.log("📥 Solicitando imágenes:", req.query);
     
     const { tipo, anio, grado } = req.query;
+    
+    // Verificar variables de Cloudinary
+    if (missingVars.length > 0) {
+      return res.status(500).json({ 
+        error: "Configuración incompleta",
+        message: "Faltan variables de entorno de Cloudinary",
+        missing: missingVars
+      });
+    }
     
     if (!tipo || !anio || !grado) {
       return res.status(400).json({ 
@@ -110,9 +71,11 @@ app.get("/imagenes", async (req, res) => {
     const prefix = `${tipo}/${anio}/${grado}`;
     console.log("🔍 Buscando en prefix:", prefix);
 
-    const result = await cloudinary.api.resources({
+    // Usar resources_by_tag en vez de resources para mejor compatibilidad
+    const tag = `${tipo}_${anio}_${grado}`;
+    
+    const result = await cloudinary.api.resources_by_tag(tag, {
       type: "upload",
-      prefix,
       max_results: 50,
     });
 
@@ -132,52 +95,67 @@ app.get("/imagenes", async (req, res) => {
     });
   } catch (error) {
     console.error("❌ Error listando imágenes:", error);
+    
+    // Error específico de autenticación
+    if (error.message?.includes('api_secret mismatch') || error.http_code === 401) {
+      return res.status(500).json({ 
+        error: "Error de autenticación con Cloudinary",
+        message: "Verifica las variables de entorno CLOUDINARY_API_KEY y CLOUDINARY_API_SECRET",
+        code: "AUTH_ERROR"
+      });
+    }
+    
     res.status(500).json({ 
       error: "Error al listar imágenes",
-      message: error.message,
-      details: error.stack
+      message: error.message
     });
   }
 });
 
-// Ruta de salud para verificar que el servidor funciona
+// Ruta de diagnóstico mejorada
 app.get("/", (req, res) => {
+  const configStatus = missingVars.length > 0 ? "INCOMPLETA" : "CORRECTA";
+  
   res.json({ 
-    message: "Servidor OBS Backend funcionando correctamente",
+    message: "Servidor OBS Backend funcionando",
     timestamp: new Date().toISOString(),
+    config_status: configStatus,
+    missing_variables: missingVars,
     environment: {
-      cloudinary_configured: !!process.env.CLOUDINARY_CLOUD_NAME,
-      node_version: process.version
+      cloud_name: process.env.CLOUDINARY_CLOUD_NAME ? "✅" : "❌",
+      api_key: process.env.CLOUDINARY_API_KEY ? "✅" : "❌", 
+      api_secret: process.env.CLOUDINARY_API_SECRET ? "✅" : "❌"
     }
   });
 });
 
-// Ruta para verificar configuración de Cloudinary (solo para desarrollo)
-app.get("/config", (req, res) => {
-  res.json({
-    cloudinary: {
-      cloud_name: process.env.CLOUDINARY_CLOUD_NAME ? "✅ Configurado" : "❌ Faltante",
-      api_key: process.env.CLOUDINARY_API_KEY ? "✅ Configurado" : "❌ Faltante",
-      api_secret: process.env.CLOUDINARY_API_SECRET ? "✅ Configurado" : "❌ Faltante"
+// Ruta para probar conexión con Cloudinary
+app.get("/test-cloudinary", async (req, res) => {
+  try {
+    if (missingVars.length > 0) {
+      return res.status(500).json({
+        success: false,
+        error: "Variables faltantes",
+        missing: missingVars
+      });
     }
-  });
-});
 
-// Manejar rutas no encontradas
-app.use((req, res) => {
-  res.status(404).json({ error: "Ruta no encontrada" });
-});
-
-// Manejo global de errores
-app.use((error, req, res, next) => {
-  console.error("💥 Error global:", error);
-  res.status(500).json({
-    error: "Error interno del servidor",
-    message: error.message
-  });
+    // Intentar una operación simple de Cloudinary
+    const result = await cloudinary.api.ping();
+    
+    res.json({
+      success: true,
+      message: "Conexión con Cloudinary exitosa",
+      cloudinary_response: result
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: "Error conectando con Cloudinary",
+      message: error.message
+    });
+  }
 });
 
 const PORT = process.env.PORT || 3000;
-
-// Exportar para Vercel
 export default app;
