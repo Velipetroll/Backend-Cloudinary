@@ -19,6 +19,7 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
+// --- Subir archivo ---
 app.post("/upload", upload.single("file"), async (req, res) => {
   try {
     const { grado, anio, tipo } = req.body;
@@ -38,6 +39,7 @@ app.post("/upload", upload.single("file"), async (req, res) => {
   }
 });
 
+// --- Listar archivos ---
 app.get("/imagenes", async (req, res) => {
   try {
     const { tipo, anio, grado } = req.query;
@@ -52,11 +54,36 @@ app.get("/imagenes", async (req, res) => {
     const images = result.resources.map((r) => ({
       url: r.secure_url,
       public_id: r.public_id,
+      format: r.format,
     }));
 
     res.json(images);
   } catch (error) {
     res.status(500).json({ error: "Error al listar imágenes" });
+  }
+});
+
+// --- Descargar archivo desde Cloudinary ---
+app.get("/descargar", async (req, res) => {
+  try {
+    const { public_id } = req.query;
+
+    if (!public_id) {
+      return res.status(400).json({ error: "Falta public_id" });
+    }
+
+    // Obtener información del recurso
+    const info = await cloudinary.api.resource(public_id);
+
+    const url = info.secure_url;
+    const filename = public_id.replace(/\//g, "_") + "." + info.format;
+
+    // Forzar descarga
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.redirect(url);
+  } catch (error) {
+    console.error("Error al descargar:", error);
+    res.status(500).json({ error: "Error al procesar descarga" });
   }
 });
 
