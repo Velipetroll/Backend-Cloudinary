@@ -19,7 +19,9 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-// --- Subir archivo ---
+/* ============================
+      SUBIR ARCHIVO (RAW)
+============================ */
 app.post("/upload", upload.single("file"), async (req, res) => {
   try {
     const { grado, anio, tipo } = req.body;
@@ -29,17 +31,29 @@ app.post("/upload", upload.single("file"), async (req, res) => {
     const result = await cloudinary.uploader.upload(filePath, {
       folder,
       tags: [`${tipo}_${anio}_${grado}`],
-      resource_type: "auto",
+      resource_type: "raw",     // <-- fuerza modo RAW para PDFs grandes
+      use_filename: true,
+      unique_filename: false,
+      timeout: 600000           // 10 minutos
     });
 
     fs.unlinkSync(filePath);
-    res.json({ url: result.secure_url, public_id: result.public_id });
+
+    res.json({
+      url: result.secure_url,
+      public_id: result.public_id,
+      bytes: result.bytes,
+      original_filename: result.original_filename
+    });
   } catch (error) {
-    res.status(500).json({ error: "Error al subir archivo" });
+    console.error("❌ Error Cloudinary:", error);
+    res.status(500).json({ error: "Error al subir archivo a Cloudinary" });
   }
 });
 
-// --- Listar archivos ---
+/* ============================
+      LISTAR ARCHIVOS
+============================ */
 app.get("/imagenes", async (req, res) => {
   try {
     const { tipo, anio, grado } = req.query;
@@ -47,42 +61,43 @@ app.get("/imagenes", async (req, res) => {
 
     const result = await cloudinary.api.resources({
       type: "upload",
+      resource_type: "raw",
       prefix,
-      max_results: 50,
+      max_results: 50
     });
 
-    const images = result.resources.map((r) => ({
-      url: r.secure_url,
-      public_id: r.public_id,
-      format: r.format,
+    const files = result.resources.map((f) => ({
+      url: f.secure_url,
+      public_id: f.public_id,
+      format: f.format || "raw",
+      bytes: f.bytes
     }));
 
-    res.json(images);
+    res.json(files);
   } catch (error) {
-    res.status(500).json({ error: "Error al listar imágenes" });
+    console.error("❌ Error listando:", error);
+    res.status(500).json({ error: "Error al listar archivos" });
   }
 });
 
-// --- Descargar archivo desde Cloudinary ---
+/* ============================
+      DESCARGAR ARCHIVO
+============================ */
 app.get("/descargar", async (req, res) => {
   try {
     const { public_id } = req.query;
 
-    if (!public_id) {
-      return res.status(400).json({ error: "Falta public_id" });
-    }
+    if (!public_id) return res.status(400).json({ error: "Falta public_id" });
 
-    // Obtener información del recurso
-    const info = await cloudinary.api.resource(public_id);
+    const info = await cloudinary.api.resource(public_id, { resource_type: "raw" });
 
     const url = info.secure_url;
-    const filename = public_id.replace(/\//g, "_") + "." + info.format;
+    const filename = public_id.replace(/\//g, "_");
 
-    // Forzar descarga
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
     res.redirect(url);
   } catch (error) {
-    console.error("Error al descargar:", error);
+    console.error("❌ Error al descargar:", error);
     res.status(500).json({ error: "Error al procesar descarga" });
   }
 });
